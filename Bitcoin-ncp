@@ -1,72 +1,78 @@
-import numpy as np
 import pandas as pd
+import numpy as np
+import yfinance as yf
 
-# Parameters for the simulation
-days = 60
-initial_price = 50000
-mu = 0.001  # Average daily return
-sigma = 0.02  # Daily volatility
+def get_data(ticker="BTC-USD", period="1y"):
+    """Fetches and cleans real historical data."""
+    data = yf.download(ticker, period=period, interval="1d")
+    
+    # FIX: Remove any missing values (NaNs) that cause MA errors
+    df = data[['Close']].copy()
+    df.columns = ['Price']
+    df = df.dropna() 
+    
+    df['Day'] = range(1, len(df) + 1)
+    return df
 
-# Generate daily returns using geometric Brownian motion
-daily_returns = np.random.normal(mu, sigma, days)
+def generate_signals(df, short_window=7, long_window=30):
+    """Calculates Moving Averages and Buy/Sell signals."""
+    df['Short_MA'] = df['Price'].rolling(window=short_window).mean()
+    df['Long_MA'] = df['Price'].rolling(window=long_window).mean()
+    
+    df['Signal'] = 0
+    # Logic: 1 if Short_MA > Long_MA, else 0
+    df.loc[df.index[long_window:], 'Signal'] = np.where(
+        df['Short_MA'][long_window:] > df['Long_MA'][long_window:], 1, 0
+    )
+    
+    # Trade on the NEXT day's price to avoid look-ahead bias
+    df['Action_Day'] = df['Signal'].shift(1).fillna(0)
+    return df
 
-# Calculate the price path
-price_path = [initial_price]
-for r in daily_returns:
-    price_path.append(price_path[-1] * (1 + r))
+def run_backtest(df, initial_cash=100000, fee_rate=0.001, slippage_rate=0.0005, stop_loss_pct=0.05):
+    """Executes trades with fees, slippage, and stop-loss."""
+    cash = initial_cash
+    btc = 0
+    entry_price = 0
+    ledger = []
 
-# Create a pandas DataFrame
-df = pd.DataFrame({
-    'Day': range(1, days + 2),
-    'Price': price_path
-})
+    for i, row in df.iterrows():
+        current_price = row['Price']
+        
+        # --- LOGIC: EXITING A POSITION ---
+        if btc > 0:
+            # Add Slippage to Sell: You get slightly LESS than the market price
+            sell_price_with_slippage = current_price * (1 - slippage_rate)
+            
+            # 1. Check Stop-Loss
+            if current_price < entry_price * (1 - stop_loss_pct):
+                cash = (btc * sell_price_with_slippage) * (1 - fee_rate)
+                ledger.append(f"Day {int(row['Day'])}: STOP LOSS at ${sell_price_with_slippage:.2f}")
+                btc, entry_price = 0, 0
+            
+            # 2. Normal Sell Signal
+            elif row['Action_Day'] == 0:
+                cash = (btc * sell_price_with_slippage) * (1 - fee_rate)
+                ledger.append(f"Day {int(row['Day'])}: SELL at ${sell_price_with_slippage:.2f}")
+                btc, entry_price = 0, 0
 
-# Calculate moving averages
-df['7-Day MA'] = df['Price'].rolling(window=7).mean()
-df['30-Day MA'] = df['Price'].rolling(window=30).mean()
+        # --- LOGIC: ENTERING A POSITION ---
+        elif btc == 0 and row['Action_Day'] == 1:
+            # Add Slippage to Buy: You pay slightly MORE than the market price
+            buy_price_with_slippage = current_price * (1 + slippage_rate)
+            
+            entry_price = buy_price_with_slippage
+            btc = (cash * (1 - fee_rate)) / buy_price_with_slippage
+            cash = 0
+            ledger.append(f"Day {int(row['Day'])}: BUY at ${buy_price_with_slippage:.2f}")
 
-# Implement the Golden Cross trading algorithm
-df['Signal'] = 0
-df.loc[df.index[30:], 'Signal'] = np.where(df['7-Day MA'][30:] > df['30-Day MA'][30:], 1, 0)
-df['Position'] = df['Signal'].diff()
+    final_val = cash + (btc * df.iloc[-1]['Price'])
+    return final_val, ledger
 
-# --- Trading Simulation ---
-initial_cash = 100000
-cash = initial_cash
-btc = 0
-portfolio_value = initial_cash
+# Execute
+btc_df = get_data("BTC-USD")
+btc_df = generate_signals(btc_df)
+final_portfolio, trade_log = run_backtest(btc_df, slippage_rate=0.0005) # 0.05% slippage
 
-ledger = []
-
-for i, row in df.iterrows():
-    if row['Position'] == 1:  # Buy signal
-        btc_to_buy = cash / row['Price']
-        cash = 0
-        btc = btc_to_buy
-        trade = f"Day {int(row['Day'])}: Buy {btc_to_buy:.6f} BTC at ${row['Price']:.2f}"
-        ledger.append(trade)
-    elif row['Position'] == -1 and btc > 0:  # Sell signal
-        cash_from_sale = btc * row['Price']
-        trade = f"Day {int(row['Day'])}: Sell {btc:.6f} BTC at ${row['Price']:.2f}"
-        cash = cash_from_sale
-        btc = 0
-        ledger.append(trade)
-
-    # Calculate daily portfolio value
-    if row['Position'] != 0:
-      current_value = cash + (btc * row['Price'])
-      ledger.append(f"Day {int(row['Day'])}: Portfolio Value: ${current_value:.2f}")
-
-
-# --- Final Performance ---
-final_portfolio_value = cash + (btc * df.iloc[-1]['Price'])
-performance = (final_portfolio_value - initial_cash) / initial_cash * 100
-
-print("--- Daily Ledger ---")
-for entry in ledger:
-    print(entry)
-
-print("\n--- Final Portfolio Performance ---")
-print(f"Initial Portfolio Value: ${initial_cash:.2f}")
-print(f"Final Portfolio Value: ${final_portfolio_value:.2f}")
-print(f"Performance: {performance:.2f}%")
+print(f"Final Portfolio Value: ${final_portfolio:,.2f}")
+print(f"Total Return: {((final_portfolio - 100000)/100000)*100:.2f}%")
