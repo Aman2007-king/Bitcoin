@@ -1,0 +1,72 @@
+import numpy as np
+import pandas as pd
+
+# Parameters for the simulation
+days = 60
+initial_price = 50000
+mu = 0.001  # Average daily return
+sigma = 0.02  # Daily volatility
+
+# Generate daily returns using geometric Brownian motion
+daily_returns = np.random.normal(mu, sigma, days)
+
+# Calculate the price path
+price_path = [initial_price]
+for r in daily_returns:
+    price_path.append(price_path[-1] * (1 + r))
+
+# Create a pandas DataFrame
+df = pd.DataFrame({
+    'Day': range(1, days + 2),
+    'Price': price_path
+})
+
+# Calculate moving averages
+df['7-Day MA'] = df['Price'].rolling(window=7).mean()
+df['30-Day MA'] = df['Price'].rolling(window=30).mean()
+
+# Implement the Golden Cross trading algorithm
+df['Signal'] = 0
+df.loc[df.index[30:], 'Signal'] = np.where(df['7-Day MA'][30:] > df['30-Day MA'][30:], 1, 0)
+df['Position'] = df['Signal'].diff()
+
+# --- Trading Simulation ---
+initial_cash = 100000
+cash = initial_cash
+btc = 0
+portfolio_value = initial_cash
+
+ledger = []
+
+for i, row in df.iterrows():
+    if row['Position'] == 1:  # Buy signal
+        btc_to_buy = cash / row['Price']
+        cash = 0
+        btc = btc_to_buy
+        trade = f"Day {int(row['Day'])}: Buy {btc_to_buy:.6f} BTC at ${row['Price']:.2f}"
+        ledger.append(trade)
+    elif row['Position'] == -1 and btc > 0:  # Sell signal
+        cash_from_sale = btc * row['Price']
+        trade = f"Day {int(row['Day'])}: Sell {btc:.6f} BTC at ${row['Price']:.2f}"
+        cash = cash_from_sale
+        btc = 0
+        ledger.append(trade)
+
+    # Calculate daily portfolio value
+    if row['Position'] != 0:
+      current_value = cash + (btc * row['Price'])
+      ledger.append(f"Day {int(row['Day'])}: Portfolio Value: ${current_value:.2f}")
+
+
+# --- Final Performance ---
+final_portfolio_value = cash + (btc * df.iloc[-1]['Price'])
+performance = (final_portfolio_value - initial_cash) / initial_cash * 100
+
+print("--- Daily Ledger ---")
+for entry in ledger:
+    print(entry)
+
+print("\n--- Final Portfolio Performance ---")
+print(f"Initial Portfolio Value: ${initial_cash:.2f}")
+print(f"Final Portfolio Value: ${final_portfolio_value:.2f}")
+print(f"Performance: {performance:.2f}%")
